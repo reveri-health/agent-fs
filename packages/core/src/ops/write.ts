@@ -6,6 +6,7 @@ import {
   assertExpectedVersion,
   getHeadContentHash,
   createVersion,
+  withPathLock,
 } from "./versioning.js";
 import { detectMimeType } from "./mime.js";
 import { ValidationError } from "../errors.js";
@@ -55,6 +56,14 @@ export async function writeRaw(
 }
 
 async function writeInternal(
+  ctx: OpContext,
+  params: WriteRawParams & { indexableText?: string },
+  opts: { maxSize: number }
+): Promise<WriteResult> {
+  return withPathLock(ctx, [params.path], () => writeLocked(ctx, params, opts));
+}
+
+async function writeLocked(
   ctx: OpContext,
   params: WriteRawParams & { indexableText?: string },
   opts: { maxSize: number }
@@ -119,6 +128,7 @@ async function writeInternal(
     etag: s3Result.etag,
     contentType,
     contentHash,
+    expectedVersion: params.expectedVersion,
   });
 
   if (params.indexableText !== undefined) {

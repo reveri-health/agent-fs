@@ -4,6 +4,7 @@ import {
   getS3Key,
   createVersion,
   assertExpectedVersion,
+  withPathLock,
 } from "./versioning.js";
 import { detectMimeType } from "./mime.js";
 import { indexBytesForSearch } from "./search-index.js";
@@ -12,6 +13,13 @@ import { normalizePath } from "./paths.js";
 import { ValidationError } from "../errors.js";
 
 export async function cp(
+  ctx: OpContext,
+  params: CpParams
+): Promise<CpResult> {
+  return withPathLock(ctx, [params.to], () => cpLocked(ctx, params));
+}
+
+async function cpLocked(
   ctx: OpContext,
   params: CpParams
 ): Promise<CpResult> {
@@ -51,6 +59,7 @@ export async function cp(
     etag: copyResult.etag,
     contentType,
     contentHash,
+    expectedVersion: params.expectedVersion,
   });
 
   await indexBytesForSearch(ctx, to, obj.body, contentType);

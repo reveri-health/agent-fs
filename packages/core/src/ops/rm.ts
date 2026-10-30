@@ -5,6 +5,7 @@ import {
   getS3Key,
   createVersion,
   assertExpectedVersion,
+  withPathLock,
 } from "./versioning.js";
 import { clearSearchData } from "./search-index.js";
 import { publishDriveEvent } from "../events/bus.js";
@@ -12,6 +13,13 @@ import { normalizePath } from "./paths.js";
 import { favoritesAfterRemove } from "./favorite.js";
 
 export async function rm(
+  ctx: OpContext,
+  params: RmParams
+): Promise<RmResult> {
+  return withPathLock(ctx, [params.path], () => rmLocked(ctx, params));
+}
+
+async function rmLocked(
   ctx: OpContext,
   params: RmParams
 ): Promise<RmResult> {
@@ -31,6 +39,7 @@ export async function rm(
     path,
     s3VersionId: "",
     operation: "delete",
+    expectedVersion: params.expectedVersion,
   });
 
   // 3. Clear search data

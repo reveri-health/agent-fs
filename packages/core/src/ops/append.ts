@@ -4,6 +4,7 @@ import {
   getS3Key,
   createVersion,
   assertExpectedVersion,
+  withPathLock,
 } from "./versioning.js";
 import { NotFoundError } from "../errors.js";
 import { detectMimeType } from "./mime.js";
@@ -11,6 +12,13 @@ import { indexTextForSearch } from "./search-index.js";
 import { normalizePath } from "./paths.js";
 
 export async function append(
+  ctx: OpContext,
+  params: AppendParams
+): Promise<AppendResult> {
+  return withPathLock(ctx, [params.path], () => appendLocked(ctx, params));
+}
+
+async function appendLocked(
   ctx: OpContext,
   params: AppendParams
 ): Promise<AppendResult> {
@@ -54,6 +62,7 @@ export async function append(
     etag: s3Result.etag,
     contentType,
     contentHash,
+    expectedVersion: params.expectedVersion,
   });
 
   await indexTextForSearch(ctx, path, newContent);

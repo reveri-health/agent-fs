@@ -1,7 +1,7 @@
 import { eq, and, sql, desc } from "drizzle-orm";
-import { schema } from "../db/index.js";
+import { schema, type DB } from "../db/index.js";
 import type { OpContext } from "./types.js";
-import { stripLeadingSlash } from "./paths.js";
+import { normalizePath, stripLeadingSlash } from "./paths.js";
 import { EditConflictError } from "../errors.js";
 import { invalidateDriveGlobListings } from "./glob-cache.js";
 import { publishDriveEvent } from "../events/bus.js";
@@ -82,11 +82,63 @@ export function getHeadVersionRow(
   };
 }
 
+/** A drizzle transaction handle: the same query builder as {@link DB}. */
+type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
+
+/** Tail of each drive path's queue of ops, keyed by `<driveId>:<path>`. */
+const pathLocks = new Map<string, Promise<void>>();
+
+/**
+ * Run `fn` while this process holds the lock on every given drive path.
+ *
+ * Mutating ops run their `expectedVersion` check, storage write and
+ * `createVersion` under it, so a second op on the same path cannot slip in
+ * between the check and the commit, and a rejected writer never reaches
+ * storage. Ops queue per path in arrival order. Paths are locked in sorted
+ * order, so two ops that share paths (`mv a b` and `mv b a`) cannot deadlock.
+ * `fn` may `unlock` a path early, once it has committed its last write there.
+ */
+export async function withPathLock<T>(
+  ctx: Pick<OpContext, "driveId">,
+  paths: string[],
+  fn: (unlock: (path: string) => void) => Promise<T>
+): Promise<T> {
+  const releases = new Map<string, () => void>();
+  try {
+    for (const path of [...new Set(paths.map(normalizePath))].sort()) {
+      releases.set(path, await lockPath(`${ctx.driveId}:${path}`));
+    }
+    return await fn((path) => {
+      const normalized = normalizePath(path);
+      releases.get(normalized)?.();
+      releases.delete(normalized);
+    });
+  } finally {
+    for (const release of releases.values()) release();
+  }
+}
+
+async function lockPath(key: string): Promise<() => void> {
+  const previous = pathLocks.get(key);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const tail = previous ? previous.then(() => held) : held;
+  pathLocks.set(key, tail);
+  await previous;
+  return () => {
+    release();
+    if (pathLocks.get(key) === tail) pathLocks.delete(key);
+  };
+}
+
 /**
  * Pre-flight optimistic-concurrency check, shared across mutating ops.
  *
  * Returns the current head version (next - 1). If `expectedVersion` is
  * passed and doesn't match the current head, throws `EditConflictError`.
+ * `createVersion` repeats the check inside its transaction.
  *
  * `expectedVersion: 0` means "the file must not exist": no versions yet,
  * or the head is a delete tombstone (after `rm` or `mv`). A deleted path
@@ -98,7 +150,16 @@ export async function assertExpectedVersion(
   path: string,
   expectedVersion: number | undefined
 ): Promise<number> {
-  const head = ctx.db
+  return checkHeadVersion(ctx.db, ctx.driveId, path, expectedVersion);
+}
+
+function checkHeadVersion(
+  db: DB | Tx,
+  driveId: string,
+  path: string,
+  expectedVersion: number | undefined
+): number {
+  const head = db
     .select({
       version: schema.fileVersions.version,
       operation: schema.fileVersions.operation,
@@ -107,7 +168,7 @@ export async function assertExpectedVersion(
     .where(
       and(
         eq(schema.fileVersions.path, path),
-        eq(schema.fileVersions.driveId, ctx.driveId)
+        eq(schema.fileVersions.driveId, driveId)
       )
     )
     .orderBy(desc(schema.fileVersions.version))
@@ -160,11 +221,11 @@ export async function getHeadContentHash(
 /**
  * Create a version record and update file metadata.
  *
- * The version-row insert + files-row upsert run inside a single SQLite
- * transaction so the unique-index conflict (path, drive_id, version)
- * becomes a single atomic failure surface — closing the TOCTOU window
- * left open by the two separate `getNextVersion()` calls in callers
- * like `write.ts`.
+ * The head read, the `expectedVersion` re-check, the version-row insert
+ * and the files-row upsert run inside a single SQLite transaction, so a
+ * writer whose pre-flight `assertExpectedVersion` went stale cannot commit,
+ * and the unique-index conflict (path, drive_id, version) becomes a single
+ * atomic failure surface.
  *
  * A `SQLITE_CONSTRAINT_UNIQUE` violation on `file_versions` is mapped
  * to `EditConflictError` so concurrent writers see the same conflict
@@ -182,19 +243,24 @@ export async function createVersion(
     etag?: string;
     contentType?: string;
     contentHash?: string;
+    /** The caller's `expectedVersion`, checked again against the head. */
+    expectedVersion?: number;
   }
 ): Promise<number> {
   // Invalidate after storage writes but before recording the version, so failed
   // SQLite writes cannot leave a stale listing cached.
   invalidateDriveGlobListings(ctx.orgId, ctx.driveId);
 
-  const version = await getNextVersion(ctx, params.path);
+  let version = 0;
   const now = new Date();
 
   // Wrap the version insert + files upsert in a single SQLite transaction.
   // drizzle's bun-sqlite `transaction` is sync — all queries inside are sync too.
   try {
     ctx.db.transaction((tx) => {
+      version =
+        checkHeadVersion(tx, ctx.driveId, params.path, params.expectedVersion) + 1;
+
       // Insert version record
       tx.insert(schema.fileVersions)
         .values({

@@ -6,6 +6,7 @@ import {
   getS3Key,
   createVersion,
   assertExpectedVersion,
+  withPathLock,
 } from "./versioning.js";
 import { NotFoundError, AgentFSError } from "../errors.js";
 import { assertCapability } from "../storage/capabilities.js";
@@ -14,6 +15,13 @@ import { indexBytesForSearch } from "./search-index.js";
 import { normalizePath } from "./paths.js";
 
 export async function revert(
+  ctx: OpContext,
+  params: RevertParams
+): Promise<RevertResult> {
+  return withPathLock(ctx, [params.path], () => revertLocked(ctx, params));
+}
+
+async function revertLocked(
   ctx: OpContext,
   params: RevertParams
 ): Promise<RevertResult> {
@@ -78,6 +86,7 @@ export async function revert(
     etag: s3Result.etag,
     contentType,
     contentHash,
+    expectedVersion: params.expectedVersion,
   });
 
   await indexBytesForSearch(ctx, path, oldContent.body, contentType);

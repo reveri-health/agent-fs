@@ -5,6 +5,7 @@ import {
   getS3Key,
   createVersion,
   assertExpectedVersion,
+  withPathLock,
 } from "./versioning.js";
 import { indexFile, indexedContent, removeFromIndex } from "../search/fts.js";
 import { readCurrentVersion } from "../search/pipeline.js";
@@ -21,6 +22,16 @@ import { canRenderPdfPages } from "../search/pdf.js";
 export async function mv(
   ctx: OpContext,
   params: MvParams
+): Promise<MvResult> {
+  return withPathLock(ctx, [params.from, params.to], (unlock) =>
+    mvLocked(ctx, params, unlock)
+  );
+}
+
+async function mvLocked(
+  ctx: OpContext,
+  params: MvParams,
+  unlock: (path: string) => void
 ): Promise<MvResult> {
   const from = normalizePath(params.from);
   const to = normalizePath(params.to);
@@ -70,6 +81,9 @@ export async function mv(
     contentHash,
   });
   const targetVersion = readCurrentVersion(ctx.db, { path: to, driveId: ctx.driveId });
+  // The destination is committed. A newer write may land there now; the
+  // search update below checks targetVersion and defers to it.
+  unlock(to);
 
   // 4. Delete original
   await ctx.s3.deleteObject(fromKey);
