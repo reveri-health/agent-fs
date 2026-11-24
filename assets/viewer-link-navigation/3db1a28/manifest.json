@@ -1,0 +1,33 @@
+{
+  "base": "main@ccd7da5",
+  "head": "3db1a28",
+  "capture": "running app, headless Chromium 1243, 1280x720, light theme",
+  "fixture": "synthetic org qa, drives default and context, local-filesystem storage",
+  "states": {
+    "V1": "viewer with the page",
+    "V2": "app opens a live UI link",
+    "V3": "new tab for other http(s)",
+    "V4": "same-folder page in the frame",
+    "V5": "browser default"
+  },
+  "images": [
+    "file-crossdrive-after.png",
+    "file-crossdrive-before.png",
+    "file-external-after.png",
+    "file-external-before.png",
+    "file-external-newtab-after.png",
+    "page-crossdrive-after.png",
+    "page-crossdrive-before.png",
+    "page-external-after.png",
+    "page-external-before.png",
+    "page-external-newtab-after.png"
+  ],
+  "recordings": [
+    "links-after.gif",
+    "links-after.mp4"
+  ],
+  "gaps": [
+    "Firefox and Safari not run",
+    "no TLS production deployment"
+  ]
+}
